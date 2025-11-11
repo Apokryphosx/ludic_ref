@@ -1,17 +1,35 @@
 from __future__ import annotations
-from typing import Any, Optional, List, Tuple
+from typing import Any, Optional, List, Tuple, Mapping, Dict
+
 from ludic.types import Message, SamplingArgs, StepOutcome, Observation, Info
-from ludic.agent.base import Agent
+from ludic.inference.client import ChatResponse  # protocol impl not required
+from ludic.agent import Agent
 from ludic.env import Env
+
+# ---- Mock client ---------------------------------------------------------
+
+class MockClient:
+    def __init__(self, text: str = "1") -> None:
+        self._text = text
+
+    async def complete(
+        self, *, model: str, messages: List[Message], sampling_args: SamplingArgs
+    ) -> tuple[ChatResponse, Dict[str, Any]]:
+        return ChatResponse(text=self._text), {"used_args": sampling_args}
+
+    def push_update_atomic(self, params: Mapping[str, "torch.Tensor"], **kwargs) -> str:  # type: ignore[name-defined]
+        return "mock-version"
 
 class MockAgent(Agent):
     """
-    A trivial agent for testing. Always replies with "1".
+    Real Agent wired to the MockClient.
+    No need to override act(); base Agent uses client.complete().
     """
+    def __init__(self) -> None:
+        super().__init__(client=MockClient(), model="mock")
 
-    async def act(self, messages, sampling_args, **kwargs) -> str:
-        return "1"
 
+# ---- Mock env ------------------------------------------------------------
 
 class MockEnv(Env):
     """
@@ -41,7 +59,6 @@ class MockEnv(Env):
 
     def step(self, action: str) -> StepOutcome:
         if self._t >= self.max_steps:
-            # already truncated on the previous call
             return StepOutcome(obs=self._obs, reward=0.0, truncated=True, terminated=False, info={})
 
         self._t += 1
@@ -49,11 +66,11 @@ class MockEnv(Env):
             self._obs = "✅ done"
             return StepOutcome(obs=self._obs, reward=1.0, truncated=False, terminated=True, info={})
 
-        # wrong answer
         self._obs = f"❌ try again {self._t}/{self.max_steps}"
         truncated = self._t >= self.max_steps
-        return StepOutcome(obs=self._obs, reward=-0.1, truncated=truncated, terminated=False,
-                           info={"attempt": self._t})
+        return StepOutcome(
+            obs=self._obs, reward=-0.1, truncated=truncated, terminated=False, info={"attempt": self._t}
+        )
 
     def current_obs(self) -> Observation:
         return self._obs

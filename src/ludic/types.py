@@ -9,13 +9,14 @@ JSON = Union[str, int, float, bool, None, Dict[str, Any], List[Any]]
 # ----- Agent level types -----
 
 class SamplingArgs(TypedDict, total=False):
+    seed: int
     temperature: float
-    top_p: float
     max_tokens: int
+    top_p: float
     frequency_penalty: float
     presence_penalty: float
     stop: Union[str, List[str]]
-    seed: int
+    extras: dict[str, Any] # for vendor-specific stuff
 
 # Chat-style message schema
 Message = Dict[str, str]  # {"role": "system|user|assistant", "content": "..."}

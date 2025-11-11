@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from ludic.agent.base import Agent
+from ludic.agent import Agent
 from ludic.env import Env
 from ludic.interaction import run_episode
 from ludic.types import Rollout, SamplingArgs

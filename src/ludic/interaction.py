@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 from ludic.env import Env
-from ludic.agent.base import Agent
+from ludic.agent import Agent
 from ludic.types import Rollout, Step, StepOutcome, SamplingArgs
 from ludic.context.base import ContextStrategy
 from ludic.context.full_dialog import FullDialog
@@ -37,14 +37,14 @@ async def run_episode(
 
     for t in range(max_steps):
         messages = ctx.on_before_act()
-        text = await agent.call(messages=messages, sampling_args=sargs, timeout_s=timeout_s)
-        ctx.on_after_act(text)
-        outcome: StepOutcome = env.step(text)
+        resp, _ = await agent.act(messages=messages, sampling_args=sargs, timeout_s=timeout_s)
+        ctx.on_after_act(resp)
+        outcome: StepOutcome = env.step(resp.text)
 
         rollout.steps.append(Step(
             index=t,
             prev_obs=obs,
-            action=text,
+            action=resp.text,
             next_obs=outcome.obs,
             reward=outcome.reward,
             truncated=outcome.truncated,

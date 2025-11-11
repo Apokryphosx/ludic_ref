@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
+from ludic.inference.client import ChatResponse
 from ludic.types import Message, Observation, Info
 
 class ContextStrategy(ABC):
@@ -29,7 +30,7 @@ class ContextStrategy(ABC):
         """Return messages to send to the agent for the *next* act() call."""
 
     @abstractmethod
-    def on_after_act(self, assistant_text: str) -> None:
+    def on_after_act(self, assistant_response: ChatResponse) -> None:
         """Record assistant output (and optionally transform it)."""
 
     @abstractmethod
