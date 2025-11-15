@@ -37,9 +37,25 @@ async def run_episode(
 
     for t in range(max_steps):
         messages = ctx.on_before_act()
-        resp, _ = await agent.act(messages=messages, sampling_args=sargs, timeout_s=timeout_s)
+        resp, _ = await agent.act(
+            messages=messages,
+            sampling_args=sargs,
+            timeout_s=timeout_s,
+        )
         ctx.on_after_act(resp)
         outcome: StepOutcome = env.step(resp.text)
+
+        # Build a fresh info dict that combines env info + model token metadata.
+        step_info = dict(outcome.info)
+
+        # Plumb model token IDs into Step.info so training code can use them.
+        if resp.prompt_token_ids is not None:
+            step_info["prompt_token_ids"] = resp.prompt_token_ids
+        if resp.token_ids is not None:
+            # TODO: naming is inconsistent; these are completion token IDs.
+            step_info["token_ids"] = resp.token_ids
+        if resp.finish_reason is not None:
+            step_info.setdefault("finish_reason", resp.finish_reason)
 
         rollout.steps.append(Step(
             index=t,
@@ -49,7 +65,7 @@ async def run_episode(
             reward=outcome.reward,
             truncated=outcome.truncated,
             terminated=outcome.terminated,
-            info=outcome.info,
+            info=step_info,
         ))
 
         obs = outcome.obs
