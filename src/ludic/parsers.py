@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Callable, Optional
+
+
+# ---------------------------------------------------------------------
+# ParseResult and semantic parser API
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ParseResult:
+    """
+    Result of a semantic parser.
+
+    - action: parsed/cleaned action, or None if parsing fails
+    - reward: parser-level reward (penalty for format errors, etc.)
+    - obs: optional synthetic observation the agent receives on failure
+    """
+    action: Optional[str]
+    reward: float
+    obs: Optional[str]
+
+
+Parser = Callable[[str], ParseResult]
+
+
+def compose_parsers(*parsers: Parser) -> Parser:
+    """
+    Chain multiple Parser functions left-to-right.
+
+    If any parser fails (action=None), return that failure with
+    accumulated reward.
+    """
+    def _p(raw: str) -> ParseResult:
+        current = ParseResult(action=raw, reward=0.0, obs=None)
+
+        for parser in parsers:
+            result = parser(current.action)  # type: ignore[arg-type]
+            if result.action is None:
+                return ParseResult(
+                    action=None,
+                    reward=current.reward + result.reward,
+                    obs=result.obs,
+                )
+            # success: accumulate reward
+            current = ParseResult(
+                action=result.action,
+                reward=current.reward + result.reward,
+                obs=None,
+            )
+
+        return current
+    return _p
+
+
+# ---------------------------------------------------------------------
+# Strict CoT <think>...</think> prefix parser
+# ---------------------------------------------------------------------
+
+def cot_prefix_parser(raw: str) -> ParseResult:
+    """
+    STRICT CoT prefix parser.
+
+    Required:
+        <think> ... </think> ANSWER
+
+    Output:
+        action = ANSWER
+    """
+    try:
+        pattern = re.compile(
+            r"^\s*<think>(.*?)</think>\s*(.+)$",
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        m = pattern.match(raw)
+        if not m:
+            raise ValueError("Expected '<think>...</think>' prefix followed by answer.")
+
+        answer = m.group(2).strip()
+        if not answer:
+            raise ValueError("Missing answer after </think>.")
+
+        return ParseResult(action=answer, reward=0.0, obs=None)
+
+    except Exception as e:
+        return ParseResult(
+            action=None,
+            reward=-1.0,
+            obs=f"Invalid CoT structure: {e}",
+        )
+
+
+# ---------------------------------------------------------------------
+# Strict XML <move>...</move> parser
+# ---------------------------------------------------------------------
+
+def xml_move_parser(raw: str) -> ParseResult:
+    """
+    STRICT parser for <move>...</move>.
+    """
+    try:
+        m = re.search(r"<move>(.*?)</move>", raw, flags=re.DOTALL | re.IGNORECASE)
+        if not m:
+            raise ValueError("Expected <move>...</move>.")
+
+        inner = m.group(1).strip()
+        if not inner:
+            raise ValueError("Empty <move> tag.")
+
+        return ParseResult(action=inner, reward=0.0, obs=None)
+
+    except Exception as e:
+        return ParseResult(
+            action=None,
+            reward=-1.0,
+            obs=f"Invalid action format: {e}",
+        )
