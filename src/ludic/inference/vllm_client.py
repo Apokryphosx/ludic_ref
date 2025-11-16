@@ -84,12 +84,12 @@ class VLLMChatClient(ChatClient):
 
     async def complete(
         self,
-        interrupt_thinking: Optional[int] = None,
-        return_token_ids: bool = False,
         *,
         model: str,
         messages: List[Message],
         sampling: SamplingConfig,
+        interrupt_thinking: Optional[int] = None,
+        return_token_ids: bool = False,
     ) -> Tuple[ChatResponse, Dict[str, Any]]:
         """
         High-level LLM invocation with vLLM extensions.
