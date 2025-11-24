@@ -1,10 +1,13 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Mapping
+
+import torch
 
 from ludic.types import Message, SamplingArgs
 from ludic.inference.client import ChatClient, ChatResponse
 from ludic.inference.sampling import SamplingConfig, resolve_sampling_args
+
 
 class Agent:
     """
@@ -41,3 +44,29 @@ class Agent:
 
         self.last_info = dict(info)
         return resp, info
+
+    def push_policy_update(
+        self,
+        params: Mapping[str, torch.Tensor],
+        *,
+        timeout_s: float = 600.0,
+        reset_cache: bool = True,
+        version: Optional[str] = None,
+    ) -> str:
+        """
+        Push updated policy parameters into the underlying runtime.
+
+        Delegates to the ChatClient's push_update_atomic implementation.
+        """
+        if not hasattr(self._client, "push_update_atomic"):
+            raise RuntimeError(
+                "Underlying ChatClient does not support policy weight updates "
+                "(missing push_update_atomic)."
+            )
+
+        return self._client.push_update_atomic(
+            params,
+            timeout_s=timeout_s,
+            reset_cache=reset_cache,
+            version=version,
+        )
