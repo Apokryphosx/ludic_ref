@@ -266,7 +266,7 @@ class RolloutEngine:
                 info = step.info or {}
 
                 prompt_ids = info.get("prompt_token_ids")
-                completion_ids = info.get("completion_token_ids") or info.get("token_ids")
+                completion_ids = info.get("completion_token_ids")
 
                 has_model_ids = (
                     isinstance(prompt_ids, list)
@@ -302,7 +302,7 @@ class RolloutEngine:
                         f"Missing model token IDs for rollout {r.id}, step {step.index}, "
                         "and retokenize=False. Either enable retokenize=True or fix your "
                         "Agent/run_episode to store 'prompt_token_ids' and "
-                        "'completion_token_ids' / 'token_ids' in Step.info."
+                        "'completion_token_ids' in Step.info."
                     )
 
                 # Retokenize path

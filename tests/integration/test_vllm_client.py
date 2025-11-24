@@ -103,7 +103,7 @@ async def test_vllm_client_same_seed_is_deterministic(
     r0 = results[0]
     for r in results[1:]:
         assert r.text == r0.text
-        assert r.token_ids == r0.token_ids
+        assert r.completion_token_ids == r0.completion_token_ids
         assert r.prompt_token_ids == r0.prompt_token_ids
 
 
@@ -130,7 +130,7 @@ async def test_vllm_client_returns_token_ids_and_detok(
     )
 
     assert resp.text.strip() != ""
-    assert resp.token_ids is not None
+    assert resp.completion_token_ids is not None
     assert resp.prompt_token_ids is not None
 
 
@@ -183,8 +183,8 @@ async def test_vllm_global_think_processor_triggers_at_very_small_max_think(
     )
 
     assert resp.text.strip() != ""
-    assert resp.token_ids is not None
-    completion_ids = resp.token_ids
+    assert resp.completion_token_ids is not None
+    completion_ids = resp.completion_token_ids
 
     tokenizer = AutoTokenizer.from_pretrained(
         vllm_model_name,

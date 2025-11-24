@@ -97,8 +97,8 @@ async def run_episode(
         # Token-level metadata
         if resp.prompt_token_ids is not None:
             step_info["prompt_token_ids"] = resp.prompt_token_ids
-        if resp.token_ids is not None:
-            step_info["token_ids"] = resp.token_ids
+        if resp.completion_token_ids is not None:
+            step_info["completion_token_ids"] = resp.completion_token_ids
         if resp.finish_reason is not None:
             step_info.setdefault("finish_reason", resp.finish_reason)
 

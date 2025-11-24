@@ -47,7 +47,7 @@ class TokenClient(MockClient):
         resp = ChatResponse(
             text="1",
             prompt_token_ids=[10, 11],
-            token_ids=[12, 13, 14],
+            completion_token_ids=[12, 13, 14],
         )
         return resp, {"used_args": sampling}
 

@@ -14,7 +14,7 @@ class ChatResponse:
     Keep this minimal. Put transport/vendor junk in the returned `info` dict.
     """
     text: str
-    token_ids: Optional[List[int]] = None
+    completion_token_ids: Optional[List[int]] = None
     logprobs: Optional[List[float]] = None
     finish_reason: Optional[str] = None
     prompt_token_ids: Optional[List[int]] = None
