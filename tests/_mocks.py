@@ -5,7 +5,7 @@ import torch
 from typing import Any, Optional, List, Tuple, Mapping, Dict
 
 from ludic.types import Message, StepOutcome, Observation, Info
-from ludic.inference.client import ChatResponse  # protocol impl not required
+from ludic.inference.client import ChatResponse, ChatClient
 from ludic.inference.sampling import SamplingConfig
 from ludic.agent import Agent
 from ludic.env import Env
@@ -35,6 +35,47 @@ class MockAgent(Agent):
     """
     def __init__(self) -> None:
         super().__init__(client=MockClient(), model="mock")
+
+
+# ---- NEW: Seedable Mock Client for GRPO Test ----
+
+class SeedableMockClient(ChatClient):
+    """
+    A mock client that returns a deterministic response based on the
+    sampling_seed provided. Also returns mock token IDs.
+    """
+    def __init__(self, seed_map: Dict[int, str]) -> None:
+        self._seed_map = seed_map
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: List[Message],
+        sampling: SamplingConfig,
+    ) -> tuple[ChatResponse, Dict[str, Any]]:
+        
+        # Get the deterministic text output based on the sampling seed
+        text_out = self._seed_map.get(sampling.seed, "DEFAULT_FALLBACK")
+        
+        resp = ChatResponse(
+            text=text_out,
+            # Add mock token IDs so retokenize=False path passes
+            prompt_token_ids=[1, 2, 3],
+            completion_token_ids=[10, 11] # Action
+        )
+        return resp, {"used_args": sampling}
+
+    def push_update_atomic(self, params: Mapping[str, torch.Tensor], **kwargs) -> str:
+        # Not needed for this test
+        return "mock-version"
+
+class SeedableMockAgent(Agent):
+    """
+    An agent wired to the SeedableMockClient.
+    """
+    def __init__(self, seed_map: Dict[int, str]) -> None:
+        super().__init__(client=SeedableMockClient(seed_map), model="seedable_mock")
 
 
 # ---- Mock env ------------------------------------------------------------

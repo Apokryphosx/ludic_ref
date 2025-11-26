@@ -67,6 +67,7 @@ class RolloutRequest:
     """
     env: EnvSpec
     ctx: CtxSpec
+    seed: Optional[int] = None
     sampling_args: Optional[SamplingArgs] = None
     system_prompt: Optional[str] = None
     num_episodes: int = 1

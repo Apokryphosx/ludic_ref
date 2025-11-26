@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from pathlib import Path
+from dataclasses import replace
 from typing import Callable, Dict, List, Optional
 
 from ludic.agent import Agent
@@ -75,7 +77,6 @@ class RolloutEngine:
             )
 
     # ---- registry helpers ------------------------------------------------
-
     def _build_env(self, spec: EnvSpec) -> Env:
         """Instantiate an Env from an EnvSpec via the env_registry."""
         try:
@@ -113,17 +114,25 @@ class RolloutEngine:
             ctx = self._build_ctx(request.ctx)
             sargs: SamplingArgs = request.sampling_args or {}
 
+            # 1. Determine the seed to use for env.reset()
+            # If the request forces a seed, use it.
+            # Otherwise, use the global_idx for variety.
+            run_seed = request.seed if request.seed is not None else episode_idx
+            is_forced_seed = request.seed is not None
+
             rollout = await run_episode(
                 env=env,
                 agent=self.agent,
                 action_parser=request.action_parser,
                 max_steps=max_steps,
+                seed=run_seed,
                 sampling_args=sargs,
                 ctx=ctx,
                 system_prompt=request.system_prompt,
                 timeout_s=timeout_s,
             )
 
+            # 2. Log the seed that was actually used
             rollout.meta.setdefault("episode_idx", episode_idx)
             rollout.meta.setdefault("request_meta", {})
             rollout.meta["request_meta"].update(request.meta)
@@ -134,6 +143,8 @@ class RolloutEngine:
                     "timeout_s": timeout_s,
                     "env_kind": request.env.kind,
                     "ctx_kind": request.ctx.kind,
+                    "used_seed": run_seed,
+                    "forced_seed": is_forced_seed,
                 }
             )
 
@@ -230,7 +241,7 @@ class RolloutEngine:
 
         Tokenization strategy:
         - If Step.info contains `prompt_token_ids` and `completion_token_ids`,
-          those are used.
+          those are used *unless* retokenize=True.
         - Otherwise, if retokenize=True, use provided tokenizer.
         - Else raise an error.
         """
@@ -275,7 +286,8 @@ class RolloutEngine:
                     and all(isinstance(t, int) for t in completion_ids)
                 )
 
-                if has_model_ids:
+                # Use model IDs only if they exist AND retokenize is False
+                if has_model_ids and not retokenize:
                     input_ids = list(prompt_ids) + list(completion_ids)
                     attention_mask = [1] * len(input_ids)
                     action_mask = [0] * len(prompt_ids) + [1] * len(completion_ids)
@@ -290,8 +302,11 @@ class RolloutEngine:
                                 "rollout_id": r.id,
                                 "step_index": step.index,
                                 "reward": step.reward,
+                                "prev_obs": step.prev_obs,
+                                "action": step.action,
                                 "total_reward": r.total_reward,
-                                **(r.meta),
+                                **(r.meta),       # Rollout-level meta
+                                **(step.info),    # Step-level info
                             },
                         )
                     )
@@ -326,14 +341,16 @@ class RolloutEngine:
                             "rollout_id": r.id,
                             "step_index": step.index,
                             "reward": step.reward,
+                            "prev_obs": step.prev_obs,
+                            "action": step.action,
                             "total_reward": r.total_reward,
-                            **(r.meta),
+                            **(r.meta),       # Rollout-level meta
+                            **(step.info),    # Step-level info
                         },
                     )
                 )
 
         # ---- Build batch-level metadata -----------------------------------
-        # TODO: Add more metrics for logging
         meta = {
             "batch_size": len(rollouts),
             "total_items": len(items),
@@ -400,6 +417,126 @@ class RolloutBatchSource:
         requests = self._requests_fn()
         return await self._engine.generate_batch(
             requests=requests,
+            max_steps=self._max_steps,
+            credit_assigner=self._credit_assigner,
+            timeout_s=self._timeout_s,
+            concurrency=self._concurrency,
+            retokenize=self._retokenize,
+            tokenize=self._tokenize,
+        )
+
+
+# ---------------------------------------------------------------------------
+# GRPO-specific BatchSource
+# ---------------------------------------------------------------------------
+
+
+class GRPOBatchSource:
+    """
+    A specialized BatchSource for GRPO (Group Relative Policy Optimization).
+
+    This class wraps a user's simple `requests_fn` and handles the
+    "G-sampling" logic automatically, making it much easier to use.
+
+    - The user's `requests_fn` should return `N` requests, one for each
+      prompt/group.
+    - This class expands that list into `N * G` requests by:
+        1. Forcing the same `env.reset(seed=...)` for all `G` requests
+           in a group (using `RolloutRequest.seed`).
+        2. Forcing a different `sampling_args["seed"]` for each of the `G`
+           requests to ensure diverse outputs.
+    """
+
+    def __init__(
+        self,
+        *,
+        orchestrator: RolloutEngine,
+        credit_assigner: CreditAssigner,
+        requests_fn: Callable[[], List[RolloutRequest]],
+        group_size: int,  # The 'G' in GRPO
+        max_steps: int,
+        timeout_s: Optional[float] = None,
+        concurrency: int = 8,
+        retokenize: bool = False,
+        tokenize: Optional[TokenizeFn] = None,
+    ) -> None:
+        if retokenize and tokenize is None:
+            raise ValueError(
+                "GRPOBatchSource: retokenize=True requires a tokenize() function."
+            )
+        if group_size <= 0:
+            raise ValueError("GRPOBatchSource: group_size must be > 0.")
+            
+        self._engine = orchestrator
+        self._credit_assigner = credit_assigner
+        self._requests_fn = requests_fn
+        self._group_size = group_size
+        self._max_steps = max_steps
+        self._timeout_s = timeout_s
+        self._concurrency = concurrency
+        self._retokenize = retokenize
+        self._tokenize = tokenize
+        
+        # Used for generating unique seeds
+        self._rng = random.Random() 
+
+    def _get_group_env_seed(self, base_req: RolloutRequest) -> int:
+        """Determines the single env seed for a group."""
+        if base_req.seed is not None:
+            return base_req.seed
+        # If no seed, create a new random one for this group
+        return self._rng.randint(0, 2**32 - 1)
+
+    def _expand_requests(
+        self, 
+        base_requests: List[RolloutRequest]
+    ) -> List[RolloutRequest]:
+        """
+        Expands a list of N base requests into N * G requests.
+        """
+        expanded_requests: List[RolloutRequest] = []
+        
+        for base_req in base_requests:
+            # 1. Determine the single environment seed for this group
+            group_env_seed = self._get_group_env_seed(base_req)
+
+            # 2. Get the base sampling seed (if any)
+            base_sampling_args = base_req.sampling_args or {}
+            base_sampling_seed = base_sampling_args.get("seed", self._rng.randint(0, 2**32 - 1))
+
+            # 3. Create G requests for this group
+            for i in range(self._group_size):
+                # Create new sampling args with a *different* seed
+                new_sampling_args = {
+                    **base_sampling_args,
+                    "seed": base_sampling_seed + i,
+                }
+                
+                # Create a copy of the request, forcing the
+                # group env seed and new sampling args.
+                new_req = replace(
+                    base_req,
+                    seed=group_env_seed,
+                    sampling_args=new_sampling_args,
+                    num_episodes=1,  # Each request is now 1 episode
+                )
+                expanded_requests.append(new_req)
+                
+        return expanded_requests
+
+    async def next_batch(self) -> SAWBatch:
+        """
+        Produce one SAWBatch by generating N*G rollouts.
+        """
+        # 1. Get the N base requests from the user
+        base_requests = self._requests_fn()
+        
+        # 2. Expand them to N * G requests
+        expanded_requests = self._expand_requests(base_requests)
+
+        # 3. Run the expanded batch
+        return await self._engine.generate_batch(
+            requests=expanded_requests,
             max_steps=self._max_steps,
             credit_assigner=self._credit_assigner,
             timeout_s=self._timeout_s,

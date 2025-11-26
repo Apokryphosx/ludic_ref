@@ -14,6 +14,7 @@ async def run_episode(
     agent: Agent,
     *,
     max_steps: int,
+    seed: Optional[int] = None,
     sampling_args: Optional[SamplingArgs] = None,
     ctx: Optional[ContextStrategy] = None,
     system_prompt: Optional[str] = None,
@@ -34,7 +35,9 @@ async def run_episode(
         "ctx": ctx.__class__.__name__,
     })
 
-    obs, info = env.reset()
+    # Pass the seed to env.reset()
+    obs, info = env.reset(seed=seed)
+    
     ctx.on_env_reset(obs, info)
 
     sargs: SamplingArgs = sampling_args or {}
