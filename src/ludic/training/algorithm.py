@@ -39,10 +39,19 @@ class RLAlgorithm:
         batch: Batch,
     ) -> tuple[Tensor, Dict[str, Any]]:
         """
-        Convenience wrapper so trainers can just call algo.compute_loss(...)
-        instead of algo.loss.compute(...).
+        Runs the forward pass once and delegates to the Loss object.
         """
-        return self.loss.compute(model, batch)
+        # --- Run the forward pass ---
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        logits: Tensor = outputs.logits
+
+        # Pass the resulting logits to the loss function
+        return self.loss.compute(logits, batch)
 
 
 # ---------------------------------------------------------------------------
