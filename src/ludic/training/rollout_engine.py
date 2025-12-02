@@ -8,7 +8,7 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional
 
-from ludic.env import Env
+from ludic.envs.env import LudicEnv
 from ludic.interaction.base import InteractionProtocol
 from ludic.types import Rollout, SamplingArgs
 
@@ -27,7 +27,7 @@ from ludic.training.types import (
 # Factory aliases
 # ---------------------------------------------------------------------------
 
-EnvFactory = Callable[..., Env]
+EnvFactory = Callable[..., LudicEnv]
 ProtocolFactory = Callable[..., InteractionProtocol]
 
 EnvRegistry = Dict[str, EnvFactory]
@@ -76,7 +76,7 @@ class RolloutEngine:
             )
 
     # ---- registry helpers ------------------------------------------------
-    def _build_env(self, spec: EnvSpec) -> Env:
+    def _build_env(self, spec: EnvSpec) -> LudicEnv:
         """Instantiate an Env from an EnvSpec via the env_registry."""
         try:
             factory = self.env_registry[spec.kind]

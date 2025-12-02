@@ -5,11 +5,11 @@ import torch
 from typing import Any, Optional, List, Tuple, Mapping, Dict
 from dataclasses import asdict
 
+from ludic.envs.single_agent_env import SingleAgentEnv
 from ludic.types import Message, StepOutcome, Observation, Info
 from ludic.inference.client import ChatResponse, ChatClient
 from ludic.inference.sampling import SamplingConfig
 from ludic.agent import Agent
-from ludic.env import Env
 from ludic.context.base import ContextStrategy
 from ludic.context.full_dialog import FullDialog
 from ludic.parsers import Parser, ParseResult
@@ -106,7 +106,7 @@ class SeedableMockAgent(Agent):
 
 # ---- Mock env ------------------------------------------------------------
 
-class MockEnv(Env):
+class MockEnv(SingleAgentEnv):
     """
     Minimal env for exercising the interaction loop only.
 
@@ -118,6 +118,7 @@ class MockEnv(Env):
     """
 
     def __init__(self, *, max_steps: int = 8, target: str = "1") -> None:
+        super().__init__()  # <-- Added call to super()
         self.max_steps = max_steps
         self.target = target
         self._t = 0
@@ -127,12 +128,12 @@ class MockEnv(Env):
     def suggested_sysprompt(self) -> Optional[str]:
         return "You are terse. Output only the final answer."
 
-    def reset(self, *, seed: Optional[int] = None) -> Tuple[Observation, Info]:
+    def env_reset(self, *, seed: Optional[int] = None) -> Tuple[Observation, Info]:  # <-- Renamed
         self._t = 0
         self._obs = "Reply with '1' to finish."
         return self._obs, {}
 
-    def step(self, action: str) -> StepOutcome:
+    def env_step(self, action: str) -> StepOutcome:  # <-- Renamed
         if self._t >= self.max_steps:
             return StepOutcome(obs=self._obs, reward=0.0, truncated=True, terminated=False, info={})
 
@@ -147,5 +148,5 @@ class MockEnv(Env):
             obs=self._obs, reward=-0.1, truncated=truncated, terminated=False, info={"attempt": self._t}
         )
 
-    def current_obs(self) -> Observation:
+    def env_current_obs(self) -> Observation:  # <-- Renamed
         return self._obs

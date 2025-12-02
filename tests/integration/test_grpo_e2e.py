@@ -5,7 +5,7 @@ from typing import Optional, Tuple, List, Dict, Any
 
 import pytest
 
-from ludic.env import Env
+from ludic.envs.single_agent_env import SingleAgentEnv
 from ludic.types import Observation, Info, StepOutcome, SamplingArgs
 from ludic.training.types import (
     RolloutRequest,
@@ -31,7 +31,7 @@ pytestmark = [pytest.mark.integration]
 # ---------------------------------------------------------------------------
 # 1. A mock environment that is deterministic based on seed
 # ---------------------------------------------------------------------------
-class SeedableMockEnv(Env):
+class SeedableMockEnv(SingleAgentEnv):
     """
     A mock env that is deterministic based on the reset seed.
     - reset() obs includes the seed.
@@ -39,6 +39,7 @@ class SeedableMockEnv(Env):
     """
 
     def __init__(self, correct_action: str = "A") -> None:
+        super().__init__()
         self.correct_action = correct_action
         self._obs: Observation = "Not reset"
         self._t = 0
@@ -47,12 +48,12 @@ class SeedableMockEnv(Env):
     def suggested_sysprompt(self) -> Optional[str]:
         return f"You must reply with only one letter. The correct letter is {self.correct_action}."
 
-    def reset(self, *, seed: Optional[int] = None) -> Tuple[Observation, Info]:
+    def env_reset(self, *, seed: Optional[int] = None) -> Tuple[Observation, Info]:
         self._t = 0
         self._obs = f"Start state for seed {seed}. Correct action is {self.correct_action}."
         return self._obs, {"seed": seed}
 
-    def step(self, action: str) -> StepOutcome:
+    def env_step(self, action: str) -> StepOutcome:
         self._t += 1
         action_clean = action.strip().upper()
 
@@ -73,7 +74,7 @@ class SeedableMockEnv(Env):
             info={"action_taken": action_clean},
         )
 
-    def current_obs(self) -> Observation:
+    def env_current_obs(self) -> Observation:
         return self._obs
 
 

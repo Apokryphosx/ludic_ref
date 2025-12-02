@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from ludic.env import Env
+from ludic.envs.env import LudicEnv
 from ludic.agent import Agent
 from ludic.types import Rollout, Step, StepOutcome, SamplingArgs
 from .base import InteractionProtocol
@@ -10,8 +10,10 @@ class SingleAgentSyncProtocol(InteractionProtocol):
     """
     Implements the standard single-agent, synchronous interaction loop.
     
-    This protocol is initialized with a single, fully-configured Agent
-    that manages its own context and parsing.
+    This protocol consumes a LudicEnv but ASSUMES it has exactly
+    one agent and that this agent is active every step.
+    
+    It works perfectly with any env inheriting from SingleAgentEnv.
     """
     
     def __init__(self, agent: Agent):
@@ -26,28 +28,34 @@ class SingleAgentSyncProtocol(InteractionProtocol):
     async def run(
         self,
         *,
-        env: Env,
+        env: LudicEnv,
         max_steps: int,
         seed: Optional[int] = None,
         sampling_args: Optional[SamplingArgs] = None,
         timeout_s: Optional[float] = None,
     ) -> Rollout:
         
-        # 1. --- Setup ---
-        agent = self.agent  # Use the agent provided during initialization
+        agent = self.agent
         sargs: SamplingArgs = sampling_args or {}
 
+        # 1. --- Validate Env and get Agent ID ---
+        agent_ids = env.agent_ids
+        if len(agent_ids) != 1:
+            raise ValueError(
+                f"SingleAgentSyncProtocol requires a LudicEnv with "
+                f"exactly one agent, but found {len(agent_ids)}."
+            )
+        agent_id = agent_ids[0]
+
         # 2. --- Reset Env ---
-        obs, info = env.reset(seed=seed)
+        # env.reset() returns a dict
+        obs_info_dict = env.reset(seed=seed)
+        obs, info = obs_info_dict[agent_id]
         
         # 3. --- Reset Agent & Feed First Obs ---
-        # Pass the env's suggested prompt to the agent.
-        # The agent's ContextStrategy will decide whether to use
-        # this, or its own default prompt.
-        agent.reset(system_prompt=env.suggested_sysprompt)
-        
-        # Feed the *first* observation to the agent
-        agent.on_env_reset(obs, info) 
+        sys_prompt = getattr(env, "suggested_sysprompt", None)
+        agent.reset(system_prompt=sys_prompt)
+        agent.on_env_reset(obs, info)
         
         rollout = Rollout(meta={
             "agent_name": getattr(agent, "name", "unknown"),
@@ -57,11 +65,15 @@ class SingleAgentSyncProtocol(InteractionProtocol):
         # 4. --- Run Interaction Loop ---
         for t in range(max_steps):
             
-            # Store the obs that led to this action (for logging)
-            current_obs_for_step = obs 
+            # Check that our agent is the one expected to act
+            active_agents = env.active_agents
+            if agent_id not in active_agents:
+                # This env is not a simple single-agent env, stop.
+                break 
+
+            current_obs_for_step = obs
             
             # --- A. Call the Agent ---
-            # Agent acts based on its internal context (fed by previous obs)
             parse_result, raw_action, client_info = await agent.act(
                 sampling_args=sargs,
                 timeout_s=timeout_s
@@ -72,6 +84,16 @@ class SingleAgentSyncProtocol(InteractionProtocol):
                 synthetic_obs = parse_result.obs or "Invalid action."
                 parser_reward = parse_result.reward
 
+                # Create a synthetic outcome
+                outcome = StepOutcome(
+                    obs=synthetic_obs,
+                    reward=parser_reward,
+                    truncated=False,
+                    terminated=False,
+                    info={"parse_error": True, **client_info}
+                )
+                
+                # Log this failure step
                 rollout.steps.append(Step(
                     index=t,
                     prev_obs=current_obs_for_step,
@@ -80,60 +102,64 @@ class SingleAgentSyncProtocol(InteractionProtocol):
                     reward=parser_reward,
                     truncated=False,
                     terminated=False,
-                    info={
-                        "parse_error": True,
-                        "raw_action": raw_action,
-                        **client_info
-                    },
+                    info=outcome.info,
                 ))
 
-                # Feed the synthetic failure obs back to the agent
-                obs = synthetic_obs
-                info = {"parse_error": True}
-                agent.on_after_step(obs, info)
-                continue # Continue to the next loop iteration
-
             # --- C. Handle Parser Success (Step Env) ---
-            parsed_action = parse_result.action
-            parser_reward = parse_result.reward
+            else:
+                parsed_action = parse_result.action
+                parser_reward = parse_result.reward
 
-            outcome: StepOutcome = env.step(parsed_action)
+                # Send action to env in the required dict format
+                actions_dict = {agent_id: parsed_action}
+                outcomes_dict = env.step(actions_dict)
 
-            # Build info dict
-            step_info = {
-                **client_info,
-                **outcome.info,
-                "parsed_action": parsed_action,
-            }
+                # Unwrap the outcome for our agent
+                env_outcome = outcomes_dict[agent_id]
+                
+                # Combine parser and env rewards
+                total_reward = env_outcome.reward + parser_reward
+                
+                # Merge info dicts
+                step_info = {
+                    **client_info,
+                    **env_outcome.info,
+                    "parsed_action": parsed_action,
+                }
 
-            # Total reward = env reward + parser reward
-            total_reward = outcome.reward + parser_reward
+                # Create the final, combined outcome
+                outcome = StepOutcome(
+                    obs=env_outcome.obs,
+                    reward=total_reward,
+                    truncated=env_outcome.truncated,
+                    terminated=env_outcome.terminated,
+                    info=step_info
+                )
 
-            # For logging: terminal/truncated steps have no next_obs
-            logged_next_obs = None
-            if not (outcome.terminated or outcome.truncated):
-                logged_next_obs = outcome.obs
+                # Log this success step
+                logged_next_obs = None
+                if not (outcome.terminated or outcome.truncated):
+                    logged_next_obs = outcome.obs
+                
+                rollout.steps.append(Step(
+                    index=t,
+                    prev_obs=current_obs_for_step,
+                    action=raw_action,
+                    next_obs=logged_next_obs,
+                    reward=total_reward,
+                    truncated=outcome.truncated,
+                    terminated=outcome.terminated,
+                    info=step_info,
+                ))
 
-            rollout.steps.append(Step(
-                index=t,
-                prev_obs=current_obs_for_step,
-                action=raw_action,
-                next_obs=logged_next_obs,
-                reward=total_reward,
-                truncated=outcome.truncated,
-                terminated=outcome.terminated,
-                info=step_info,
-            ))
-
-            # Update obs and info for the next loop
+            # --- D. Update state for next loop ---
             obs = outcome.obs
             info = outcome.info
 
-            # --- D. Check for Termination & Feed Next Obs ---
             if outcome.terminated or outcome.truncated:
                 break # Exit loop
             else:
-                # Feed the new observation to the agent for the *next* step
+                # Feed the new observation to the agent
                 agent.on_after_step(obs, info)
 
         return rollout

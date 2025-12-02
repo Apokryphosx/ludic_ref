@@ -2,23 +2,22 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from ludic.env import Env
+from ludic.envs.env import LudicEnv
 from ludic.types import Rollout, SamplingArgs
 
 class InteractionProtocol(ABC):
     """
     Abstract base class for all interaction protocols.
     
-    A protocol defines the "rules of the game" for how Agent(s) and an
-    EnvKernel interact. The protocol is initialized with the agent(s)
-    it will manage.
+    A protocol consumes a LudicEnv (the "Kernel") and one or more
+    Agents, defining the rules for how they interact.
     """
     
     @abstractmethod
     async def run(
         self,
         *,
-        env: Env,
+        env: LudicEnv,
         max_steps: int,
         seed: Optional[int] = None,
         sampling_args: Optional[SamplingArgs] = None,

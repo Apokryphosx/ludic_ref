@@ -1,36 +1,74 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
-from ludic.types import Observation, StepOutcome, Info, Snapshot
+from typing import (
+    Generic, TypeVar, List, Dict, Tuple, Optional
+)
+from ludic.types import StepOutcome, Info
 
-class Env(ABC):
+# --- Generic Types for the Kernel Interface ---
+
+AgentID = TypeVar("AgentID", bound=str)
+ObsType = TypeVar("ObsType")
+ActionType = TypeVar("ActionType")
+
+# ------------------------------------------------
+# The "Kernel" Abstract Base Class
+# ------------------------------------------------
+
+class LudicEnv(ABC, Generic[AgentID, ObsType, ActionType]):
+    """
+    The canonical, multi-agent-aware Environment "Kernel" interface.
+
+    This is the "core" interface that all advanced protocols should
+    be built to consume. It is multi-agent by default.
+    """
+
     @property
-    def suggested_sysprompt(self) -> Optional[str]:
-        return None
-
     @abstractmethod
-    def reset(self, *, seed: Optional[int] = None) -> Tuple[Observation, Info]:
+    def agent_ids(self) -> List[AgentID]:
+        """A list of all agent roles defined in this environment."""
+        ...
+
+    @property
+    @abstractmethod
+    def active_agents(self) -> List[AgentID]:
+        """
+        The list of agent IDs expected to provide an action *this* step.
+        (For simultaneous-move envs, this is all agents. 
+         For turn-based, it may be only one).
+        """
         ...
 
     @abstractmethod
-    def step(self, action: str) -> StepOutcome:
+    def reset(self, *, seed: Optional[int] = None
+    ) -> Dict[AgentID, Tuple[ObsType, Info]]:
+        """
+        Resets the environment.
+        Returns:
+            A dictionary mapping all agent IDs to their
+            initial (Observation, Info) tuple.
+        """
         ...
 
     @abstractmethod
-    def current_obs(self) -> Observation:
+    def step(self, actions: Dict[AgentID, ActionType]
+    ) -> Dict[AgentID, StepOutcome]:
+        """
+        Processes a dictionary of actions from the active agents.
+        
+        Args:
+            actions: A dict mapping AgentID -> Action for
+                     each agent in `active_agents`.
+        
+        Returns:
+            A dictionary mapping all agent IDs to their
+            StepOutcome for this step.
+        """
         ...
-
-    # Snapshots -----------------------------------------------------------
-    def snapshot(self) -> Snapshot:
+    
+    def current_obs(self) -> Dict[AgentID, ObsType]:
         """
-        Return a resumable snapshot of the environment. Default implementation
-        raises; concrete envs MUST override to be snapshot-capable.
+        Returns the current observation for all agents.
+        This is an optional method for convenience.
         """
-        raise NotImplementedError("snapshot() not supported")
-
-    def reset_from(self, snap: Snapshot) -> Tuple[Observation, Info]:
-        """
-        Restore the environment from a snapshot and start a NEW episode fork.
-        Returns (obs, info). Concrete envs SHOULD override; default refuses.
-        """
-        raise NotImplementedError("reset_from() not supported")
+        raise NotImplementedError
