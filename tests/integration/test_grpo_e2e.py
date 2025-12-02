@@ -9,16 +9,18 @@ from ludic.env import Env
 from ludic.types import Observation, Info, StepOutcome, SamplingArgs
 from ludic.training.types import (
     RolloutRequest,
+    ProtocolSpec,
     EnvSpec,
 )
 from ludic.training.rollout_engine import (
     RolloutEngine,
     GRPOBatchSource,
-    ProtocolFactory,
+    ProtocolRegistry,
 )
 from ludic.training.credit_assignment import (
     GroupNormalizedReturn,
 )
+from ludic.interaction.base import InteractionProtocol
 from ludic.interaction.single_agent import SingleAgentSyncProtocol
 
 from tests._mocks import SeedableMockAgent
@@ -124,12 +126,14 @@ async def test_grpo_e2e_seed_grouping_and_credit() -> None:
     def create_protocol() -> InteractionProtocol:
         agent = SeedableMockAgent(seed_map=seed_to_action_map)
         return SingleAgentSyncProtocol(agent=agent)
-
-    protocol_factory: ProtocolFactory = create_protocol
     # -----------------------------------
+    
+    protocol_registry: ProtocolRegistry = {
+        "grpo_protocol": create_protocol
+    }
 
     engine = RolloutEngine(
-        protocol_factory=protocol_factory,
+        protocol_registry=protocol_registry,
         env_registry=env_registry,
     )
 
@@ -149,13 +153,13 @@ async def test_grpo_e2e_seed_grouping_and_credit() -> None:
 
         req_A = RolloutRequest(
             env=EnvSpec(kind="env_A", kwargs={}),
-            # ctx=CtxSpec(kind="full_dialog", kwargs={}), # <-- Removed
+            protocol=ProtocolSpec(kind="grpo_protocol", kwargs={}),
             seed=seed_group_A,  # Force env seed for Group A
             sampling_args=s_args_A,
         )
         req_B = RolloutRequest(
             env=EnvSpec(kind="env_B", kwargs={}),
-            # ctx=CtxSpec(kind="full_dialog", kwargs={}), # <-- Removed
+            protocol=ProtocolSpec(kind="grpo_protocol", kwargs={}),
             seed=seed_group_B,  # Force env seed for Group B
             sampling_args=s_args_B,
         )
@@ -191,6 +195,7 @@ async def test_grpo_e2e_seed_grouping_and_credit() -> None:
 
         assert "prompt_token_ids" in item.meta
         assert "completion_token_ids" in item.meta
+        assert item.meta["engine"]["protocol_kind"] == "grpo_protocol"
 
     rollout_list = list(rollouts.values())
     assert len(rollout_list) == 4

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
-from ludic.parsers import Parser
 from ludic.types import JSON, Rollout, SamplingArgs, Step
 
 
@@ -31,6 +30,18 @@ class CtxSpec:
     kwargs: Dict[str, JSON] = field(default_factory=dict)
 
 
+@dataclass
+class ProtocolSpec:
+    """
+    Serializable description of a protocol to instantiate.
+
+    - kind: string key into a protocol registry
+    - kwargs: JSON-serializable constructor/config kwargs
+    """
+    kind: str
+    kwargs: Dict[str, JSON] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Rollout-level configuration / identification
 # ---------------------------------------------------------------------------
@@ -46,13 +57,16 @@ class RolloutRequest:
     This is *pure data*; RolloutEngine will:
 
         - resolve env via registry from (env.kind)
-        - call the factory with env.kwargs
+        - resolve protocol via registry from (protocol.kind)
+        - call the factories with env.kwargs / protocol.kwargs
         - run `num_episodes` independent episodes using the
-          engine's pre-configured InteractionProtocol.
+          instantiated InteractionProtocol.
 
     Fields:
       - env:
             EnvSpec, resolved via env_registry.
+      - protocol:
+            ProtocolSpec, resolved via protocol_registry.
             
       - sampling_args:
             Passed directly to Agent via protocol.run().
@@ -64,6 +78,7 @@ class RolloutRequest:
             Arbitrary JSON metadata that gets merged into Rollout.meta["request_meta"].
     """
     env: EnvSpec
+    protocol: ProtocolSpec
     seed: Optional[int] = None
     sampling_args: Optional[SamplingArgs] = None
     num_episodes: int = 1

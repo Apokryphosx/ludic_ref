@@ -13,7 +13,7 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
 )
 
-from ludic.agent import Agent
+from ludic.inference.client import ChatClient
 from ludic.training.algorithm import RLAlgorithm
 from ludic.training.config import TrainerConfig
 from ludic.training.types import SAWBatch, SAWItem, BatchSource
@@ -102,17 +102,17 @@ class Trainer:
           ↓
         optimizer.zero_grad()  # <-- Grads freed
           ↓
-        Agent.push_policy_update(...)   # <-- Sync
+        client.push_policy_update(...)     # <-- Sync
 
     Trainer is agnostic to envs, contexts, rollouts, and tokenization.
 
     This variant is FSDP-aware:
 
       - If `model` is wrapped in FSDP, it will:
-            * on rank 0 only:
+          * on rank 0 only:
                 - switch to FULL_STATE_DICT
                 - gather a full state dict (no CPU offload by default)
-                - push the full (unsharded) params to the Agent's runtime
+                - push the full (unsharded) params to the runtime
 
       - On non-FSDP models, it just uses `named_parameters()` as before.
     """
@@ -123,7 +123,7 @@ class Trainer:
         model: nn.Module,
         algo: RLAlgorithm,
         batch_source: BatchSource,
-        agent: Agent,
+        client: ChatClient,
         cfg: TrainerConfig = TrainerConfig(),
         param_filter: Optional[Callable[[str, Tensor], bool]] = None,
     ) -> None:
@@ -141,9 +141,9 @@ class Trainer:
                 Any object implementing BatchSource.next_batch() -> SAWBatch.
                 This is where rollouts, replay, branching, curricula live.
 
-            agent:
-                Ludic Agent wrapping a ChatClient (e.g., VLLMChatClient).
-                Used for pushing updated weights into the runtime.
+            client:
+                A ChatClient (e.g., VLLMChatClient) used for pushing
+                updated weights into the runtime.
 
             cfg:
                 TrainerConfig for device, optimizer hyperparams, pad_token_id,
@@ -162,7 +162,7 @@ class Trainer:
         self.model = model.to(cfg.model_device) if not isinstance(model, FSDP) else model  # type: ignore[arg-type]
 
         self.algo = algo
-        self.agent = agent
+        self.client = client
         self._batch_source = batch_source
         self.sync_every_steps = self.cfg.sync_every_steps
         self.param_filter = param_filter
@@ -185,10 +185,10 @@ class Trainer:
         - We create AdamW over all model parameters with hyperparams
           from TrainerConfig:
 
-              lr          = cfg.lr
-              weight_decay= cfg.weight_decay
-              betas       = cfg.betas
-              eps         = cfg.eps
+                lr         = cfg.lr
+                weight_decay= cfg.weight_decay
+                betas       = cfg.betas
+                eps         = cfg.eps
         """
         return optim.AdamW(
             self.model.parameters(),
@@ -398,11 +398,11 @@ class Trainer:
 
     def _push_weights_to_runtime(self) -> None:
         """
-        Push updated policy parameters into the serving runtime via Agent.
+        Push updated policy parameters into the serving runtime via Client.
 
-        Requires that `agent` implements:
+        Requires that `client` implements:
 
-            def push_policy_update(self, params: Mapping[str, Tensor], ...) -> str
+            def push_update_atomic(self, params: Mapping[str, Tensor], ...) -> str
 
         FSDP-aware behavior:
 
@@ -410,7 +410,7 @@ class Trainer:
                 * only rank 0 (if dist initialized) does anything
                 * uses FULL_STATE_DICT with rank0_only=True
                 * gathers a full, unsharded state_dict on model_device
-                * optionally filters params, then hands the dict to Agent
+                * optionally filters params, then hands the dict to Client
 
             - If model is not FSDP:
                 * uses named_parameters() with the same filter policy.
@@ -420,10 +420,10 @@ class Trainer:
         and will use NCCL from there. If you care, set cfg.runtime_device
         accordingly.
         """
-        if not hasattr(self.agent, "push_policy_update"):
+        if not hasattr(self.client, "push_update_atomic"):
             raise RuntimeError(
-                "Agent does not support policy weight updates "
-                "(missing push_policy_update)."
+                "ChatClient does not support policy weight updates "
+                "(missing push_update_atomic)."
             )
 
         # Only rank 0 talks to the runtime in distributed mode
@@ -439,7 +439,7 @@ class Trainer:
         if isinstance(self.model, FSDP):
             # Gather full, unsharded state dict on the model device.
             full_cfg = FullStateDictConfig(
-                offload_to_cpu=False,   # full model stays on GPU; rollouts dominate anyway
+                offload_to_cpu=False,  # full model stays on GPU; rollouts dominate anyway
                 rank0_only=True,
             )
             with FSDP.state_dict_type(
@@ -458,7 +458,7 @@ class Trainer:
             if not params:
                 return
 
-            self.agent.push_policy_update(params)
+            self.client.push_update_atomic(params)
             return
 
         # ---------------- non-FSDP path ----------------
@@ -476,5 +476,5 @@ class Trainer:
         if not params:
             return
 
-        # Delegate to Agent
-        self.agent.push_policy_update(params)
+        # Delegate to Client
+        self.client.push_update_atomic(params)

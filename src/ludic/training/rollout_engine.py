@@ -8,7 +8,6 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional
 
-from ludic.context.base import ContextStrategy
 from ludic.env import Env
 from ludic.interaction.base import InteractionProtocol
 from ludic.types import Rollout, SamplingArgs
@@ -20,7 +19,7 @@ from ludic.training.types import (
     RolloutStepKey,
     TokenizeFn,
     RolloutRequest,
-    CtxSpec,
+    ProtocolSpec,
     EnvSpec,
 )
 
@@ -28,22 +27,22 @@ from ludic.training.types import (
 # Factory aliases
 # ---------------------------------------------------------------------------
 
-EnvFactory = Callable[..., Env]  # Build a fresh Env given kwargs
-ProtocolFactory = Callable[[], InteractionProtocol]  # Build a fresh Protocol
+EnvFactory = Callable[..., Env]
+ProtocolFactory = Callable[..., InteractionProtocol]
 
 EnvRegistry = Dict[str, EnvFactory]
-# CtxRegistry is no longer needed here; it's used to build the Agent/Protocol
-CtxRegistry = Dict[str, Callable[..., ContextStrategy]]
+ProtocolRegistry = Dict[str, ProtocolFactory]
 
 
 class RolloutEngine:
     """
     Stateless rollout executor:
 
-      - Is configured with a ProtocolFactory and an EnvRegistry.
+      - Is configured with a ProtocolRegistry and an EnvRegistry.
       - For each rollout, it:
         1. Spawns a task.
-        2. Calls the ProtocolFactory to create a *new* protocol/agent worker.
+        2. Calls the ProtocolRegistry to create a *new* protocol/agent worker
+           based on the RolloutRequest.
         3. Calls the EnvRegistry to create a *new* env.
         4. Runs the episode and returns the rollout.
       - Optionally writes each rollout to JSONL
@@ -63,12 +62,12 @@ class RolloutEngine:
     def __init__(
         self,
         *,
-        protocol_factory: ProtocolFactory,
         env_registry: EnvRegistry,
+        protocol_registry: ProtocolRegistry,
         jsonl_path: Optional[str] = None,
     ) -> None:
-        self.protocol_factory = protocol_factory
         self.env_registry = dict(env_registry)
+        self.protocol_registry = dict(protocol_registry)
         self.jsonl_path = jsonl_path
 
         if self.jsonl_path:
@@ -83,6 +82,14 @@ class RolloutEngine:
             factory = self.env_registry[spec.kind]
         except KeyError as exc:
             raise KeyError(f"Unknown env kind: {spec.kind!r}") from exc
+        return factory(**spec.kwargs)
+
+    def _build_protocol(self, spec: ProtocolSpec) -> InteractionProtocol:
+        """Instantiate an InteractionProtocol from a ProtocolSpec via the registry."""
+        try:
+            factory = self.protocol_registry[spec.kind]
+        except KeyError as exc:
+            raise KeyError(f"Unknown protocol kind: {spec.kind!r}") from exc
         return factory(**spec.kwargs)
 
     # ---- internal helpers ------------------------------------------------
@@ -104,7 +111,7 @@ class RolloutEngine:
         """
         async with sem:
             # 1. Create a fresh, independent protocol worker (and its agent)
-            protocol = self.protocol_factory()
+            protocol = self._build_protocol(request.protocol)
 
             # 2. Create a fresh env
             env = self._build_env(request.env)
@@ -134,6 +141,7 @@ class RolloutEngine:
                     "max_steps": max_steps,
                     "timeout_s": timeout_s,
                     "env_kind": request.env.kind,
+                    "protocol_kind": request.protocol.kind,
                     "used_seed": run_seed,
                     "forced_seed": is_forced_seed,
                 }
@@ -184,7 +192,7 @@ class RolloutEngine:
         """
         Run all rollouts described by `requests` and return them.
 
-        Each RolloutRequest may specify a different env / ctx / sampling config
+        Each RolloutRequest may specify a different env / protocol / sampling config
         and a different num_episodes, supporting heterogeneous batches.
         """
         if not requests:

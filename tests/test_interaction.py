@@ -10,7 +10,7 @@ from ludic.parsers import (
     compose_parsers,
     Parser,
 )
-from tests._mocks import MockEnv, MockClient, MockAgent, _mock_parser
+from tests._mocks import MockEnv, MockClient, MockAgent
 
 
 # ---------------------------------------------------------------------

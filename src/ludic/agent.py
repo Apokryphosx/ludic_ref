@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple, Mapping
 import torch
 
 from ludic.types import SamplingArgs, Observation, Info, Message
-from ludic.inference.client import ChatClient, ChatResponse
+from ludic.inference.client import ChatClient
 from ludic.inference.sampling import SamplingConfig, resolve_sampling_args
 from ludic.context.base import ContextStrategy
 from ludic.parsers import Parser, ParseResult

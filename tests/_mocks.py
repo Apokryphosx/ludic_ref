@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from typing import Any, Optional, List, Tuple, Mapping, Dict
+from dataclasses import asdict
 
 from ludic.types import Message, StepOutcome, Observation, Info
 from ludic.inference.client import ChatResponse, ChatClient
@@ -20,7 +21,7 @@ def _mock_parser(raw: str) -> ParseResult:
 
 # ---- Mock client ---------------------------------------------------------
 
-class MockClient:
+class MockClient(ChatClient):
     def __init__(self, text: str = "1") -> None:
         self._text = text
 
@@ -31,7 +32,7 @@ class MockClient:
         messages: List[Message],
         sampling: SamplingConfig,
     ) -> tuple[ChatResponse, Dict[str, Any]]:
-        return ChatResponse(text=self._text), {"used_args": sampling}
+        return ChatResponse(text=self._text), {"used_args": asdict(sampling)}
 
     def push_update_atomic(self, params: Mapping[str, torch.Tensor], **kwargs) -> str:  # type: ignore[name-defined]
         return "mock-version"
@@ -78,7 +79,8 @@ class SeedableMockClient(ChatClient):
             prompt_token_ids=[1, 2, 3],
             completion_token_ids=[10, 11] # Action
         )
-        return resp, {"used_args": sampling}
+        # Return the serializable dict, not the object
+        return resp, {"used_args": asdict(sampling)}
 
     def push_update_atomic(self, params: Mapping[str, torch.Tensor], **kwargs) -> str:
         # Not needed for this test

@@ -7,20 +7,23 @@ import pytest
 
 from ludic.agent import Agent
 from ludic.inference.client import ChatResponse
+from ludic.interaction.single_agent import SingleAgentSyncProtocol
+from ludic.context.full_dialog import FullDialog
 from ludic.inference.sampling import SamplingConfig
 from ludic.training.rollout_engine import (
     RolloutEngine,
     RolloutBatchSource,
+    ProtocolRegistry,
 )
 from ludic.training.types import (
     EnvSpec,
-    CtxSpec,
+    ProtocolSpec,
     RolloutRequest,
 )
 from ludic.training.credit_assignment import MonteCarloReturn
 from ludic.types import Rollout
 
-from tests._mocks import MockClient
+from tests._mocks import MockClient, _mock_parser
 
 pytestmark = [pytest.mark.integration, pytest.mark.gpu]
 
@@ -85,18 +88,20 @@ def fake_tokenize(text: str) -> List[int]:
 @pytest.mark.asyncio
 async def test_generate_rollouts_basic_metadata_and_termination(
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
+    
     engine = RolloutEngine(
-        agent=mock_agent,
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     request = RolloutRequest(
         env=EnvSpec(kind="mock", kwargs={"max_steps": 3, "target": "1"}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="mock_protocol"),
         num_episodes=2,
         meta={"tag": "test"},
     )
@@ -121,7 +126,7 @@ async def test_generate_rollouts_basic_metadata_and_termination(
         assert r.meta["engine"]["max_steps"] == 5
         assert r.meta["engine"]["timeout_s"] is None
         assert r.meta["engine"]["env_kind"] == "mock"
-        assert r.meta["engine"]["ctx_kind"] == "full_dialog"
+        assert r.meta["engine"]["protocol_kind"] == "mock_protocol"
 
         # request-level metadata propagated
         assert r.meta["request_meta"]["tag"] == "test"
@@ -137,22 +142,23 @@ async def test_generate_rollouts_basic_metadata_and_termination(
 @pytest.mark.asyncio
 async def test_generate_rollouts_unknown_env_raises(
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
     engine = RolloutEngine(
-        agent=mock_agent,
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     request = RolloutRequest(
         env=EnvSpec(kind="does_not_exist", kwargs={}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="mock_protocol"),
         num_episodes=1,
     )
 
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="Unknown env kind"):
         await engine.generate_rollouts(
             requests=[request],
             max_steps=3,
@@ -163,21 +169,23 @@ async def test_generate_rollouts_unknown_env_raises(
 async def test_generate_rollouts_writes_jsonl(
     tmp_path,
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
     jsonl_path = tmp_path / "rollouts.jsonl"
+    
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
 
     engine = RolloutEngine(
-        agent=mock_agent,
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
         jsonl_path=str(jsonl_path),
     )
 
     request = RolloutRequest(
         env=EnvSpec(kind="mock", kwargs={"max_steps": 2, "target": "1"}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="mock_protocol"),
         num_episodes=2,
         meta={"foo": "bar"},
     )
@@ -200,7 +208,7 @@ async def test_generate_rollouts_writes_jsonl(
         assert "steps" in payload
         assert payload["meta"]["request_meta"]["foo"] == "bar"
         assert payload["meta"]["engine"]["env_kind"] == "mock"
-        assert payload["meta"]["engine"]["ctx_kind"] == "full_dialog"
+        assert payload["meta"]["engine"]["protocol_kind"] == "mock_protocol"
         assert payload["length"] == len(payload["steps"])
 
 
@@ -212,22 +220,29 @@ async def test_generate_rollouts_writes_jsonl(
 @pytest.mark.asyncio
 async def test_generate_batch_uses_model_token_ids_when_available(
     env_registry,
-    ctx_registry,
 ) -> None:
     # Agent whose client returns prompt_token_ids + token_ids
-    agent = Agent(client=TokenClient(), model="mock")
+    agent = Agent(
+        client=TokenClient(),
+        model="mock",
+        ctx=FullDialog(),
+        parser=_mock_parser
+    )
+    
+    protocol_registry: ProtocolRegistry = {
+        "token_protocol": lambda: SingleAgentSyncProtocol(agent=agent)
+    }
 
     engine = RolloutEngine(
-        agent=agent,
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     credit_assigner = ConstantCreditAssigner(value=1.23)
 
     request = RolloutRequest(
         env=EnvSpec(kind="mock", kwargs={"max_steps": 1, "target": "1"}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="token_protocol"),
         num_episodes=1,
     )
 
@@ -269,20 +284,22 @@ async def test_generate_batch_uses_model_token_ids_when_available(
 @pytest.mark.asyncio
 async def test_generate_batch_raises_if_no_token_ids_and_no_retokenize(
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
+    
     engine = RolloutEngine(
-        agent=mock_agent,  # MockAgent uses MockClient (no token IDs)
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     credit_assigner = ConstantCreditAssigner(value=1.0)
 
     request = RolloutRequest(
         env=EnvSpec(kind="mock", kwargs={"max_steps": 1, "target": "1"}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="mock_protocol"),
         num_episodes=1,
     )
 
@@ -300,13 +317,15 @@ async def test_generate_batch_raises_if_no_token_ids_and_no_retokenize(
 @pytest.mark.asyncio
 async def test_generate_batch_retokenize_path_uses_custom_tokenizer(
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
+    
     engine = RolloutEngine(
-        agent=mock_agent,  # no token IDs from client
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     # Use a real credit assigner here just to check it integrates fine
@@ -314,7 +333,7 @@ async def test_generate_batch_retokenize_path_uses_custom_tokenizer(
 
     request = RolloutRequest(
         env=EnvSpec(kind="mock", kwargs={"max_steps": 1, "target": "1"}),
-        ctx=CtxSpec(kind="full_dialog", kwargs={}),
+        protocol=ProtocolSpec(kind="mock_protocol"),
         num_episodes=1,
     )
 
@@ -360,13 +379,15 @@ async def test_generate_batch_retokenize_path_uses_custom_tokenizer(
 @pytest.mark.asyncio
 async def test_rollout_batch_source_next_batch_integration(
     env_registry,
-    ctx_registry,
     mock_agent,
 ) -> None:
+    protocol_registry: ProtocolRegistry = {
+        "mock_protocol": lambda: SingleAgentSyncProtocol(agent=mock_agent)
+    }
+    
     engine = RolloutEngine(
-        agent=mock_agent,
         env_registry=env_registry,
-        ctx_registry=ctx_registry,
+        protocol_registry=protocol_registry,
     )
 
     credit_assigner = MonteCarloReturn(gamma=0.9)
@@ -376,7 +397,7 @@ async def test_rollout_batch_source_next_batch_integration(
         return [
             RolloutRequest(
                 env=EnvSpec(kind="mock", kwargs={"max_steps": 2, "target": "1"}),
-                ctx=CtxSpec(kind="full_dialog", kwargs={}),
+                protocol=ProtocolSpec(kind="mock_protocol"),
                 num_episodes=2,
                 meta={"batch_source": True},
             )
