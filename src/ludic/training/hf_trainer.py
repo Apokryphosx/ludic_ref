@@ -7,6 +7,8 @@ from transformers import Trainer
 from torch.utils.data import DataLoader
 from ludic.training.algorithm import RLAlgorithm
 from ludic.training.config import TrainerConfig
+from ludic.inference.client import ChatClient
+
 
 class LudicDataset(IterableDataset):
     def __init__(
@@ -60,7 +62,7 @@ class LudicTrainer(Trainer):
         self.batch_source = batch_source
         self.ludic_config = ludic_config
         self.client = client
-        
+
         # Safety Check: IterableDatasets require max_steps to be set
         if self.args.max_steps <= 0:
             raise ValueError(
