@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from ludic.training.algorithm import RLAlgorithm
 from ludic.training.config import TrainerConfig
 from ludic.inference.client import ChatClient
+from typing import Optional
 
 
 class LudicDataset(IterableDataset):
