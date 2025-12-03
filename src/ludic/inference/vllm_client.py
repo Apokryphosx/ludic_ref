@@ -12,8 +12,8 @@ from requests.exceptions import RequestException, Timeout
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
-from ludic.types import Message
-from ludic.inference.client import ChatClient, ChatResponse
+from ludic.types import Message, ChatResponse
+from ludic.inference.client import ChatClient
 from ludic.inference.sampling import SamplingConfig
 
 log = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ class VLLMChatClient(ChatClient):
             (ChatResponse, info):
                 ChatResponse contains:
                     .text
-                    .token_ids (may be None)
+                    .completion_token_ids (may be None)
                     .prompt_token_ids (may be None)
                     .finish_reason
                 'info' contains raw transport details and args actually sent.
@@ -197,7 +197,7 @@ class VLLMChatClient(ChatClient):
         chat_resp = ChatResponse(
             text=text,
             finish_reason=finish_reason,
-            token_ids=completion_token_ids,
+            completion_token_ids=completion_token_ids,
             prompt_token_ids=prompt_token_ids,
         )
 

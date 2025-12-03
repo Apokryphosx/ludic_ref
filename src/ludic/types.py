@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Union, Optional, TypedDict
-import time, uuid, json
+import time
+import uuid
+import json
 
 JSON = Union[str, int, float, bool, None, Dict[str, Any], List[Any]]
 
@@ -21,6 +23,17 @@ class SamplingArgs(TypedDict, total=False):
 # Chat-style message schema
 Message = Dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
+@dataclass
+class ChatResponse:
+    """
+    Normalized inference output for training/logging.
+    Keep this minimal. Put transport/vendor junk in the returned `info` dict.
+    """
+    text: str
+    completion_token_ids: Optional[List[int]] = None
+    logprobs: Optional[List[float]] = None
+    finish_reason: Optional[str] = None
+    prompt_token_ids: Optional[List[int]] = None
 
 # ----- Environment level types -----
 

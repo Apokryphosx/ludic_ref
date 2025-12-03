@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Protocol, Tuple, List
 
 import torch
-from torch import nn, Tensor
+from torch import Tensor
 
 
 Batch = Mapping[str, Tensor]
@@ -12,11 +12,11 @@ Batch = Mapping[str, Tensor]
 
 class Loss(Protocol):
     """
-    Generic loss: given a model and a collated batch of tensors, return
+    Generic loss: given model outputs (logits) and a collated batch, return
     (scalar_loss, stats).
     """
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         ...
 
 
@@ -85,17 +85,10 @@ class ReinforceLoss:
     where A is taken from `batch["weight"]`.
     """
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         input_ids = batch["input_ids"]            # [B, T]
-        attention_mask = batch["attention_mask"]  # [B, T]
         action_mask = batch["action_mask"]        # [B, T]
         advantages = batch["weight"]              # [B]
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        logits: Tensor = outputs.logits           # [B, T, V]
 
         logp_action = compute_logp_action(logits, input_ids, action_mask)  # [B]
 
@@ -123,17 +116,10 @@ class ReinforceBaselineLoss:
 
     normalize: bool = False
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
         action_mask = batch["action_mask"]
         adv_raw = batch["weight"]                # [B]
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        logits: Tensor = outputs.logits
 
         logp_action = compute_logp_action(logits, input_ids, action_mask)  # [B]
 
@@ -178,18 +164,11 @@ class PPOLoss:
     clip_eps: float = 0.2
     old_logp_key: str = "old_logp_action"
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
         action_mask = batch["action_mask"]
         advantages = batch["weight"]              # [B]
         old_logp = batch[self.old_logp_key]       # [B]
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        logits: Tensor = outputs.logits
 
         logp_action = compute_logp_action(logits, input_ids, action_mask)  # [B]
 
@@ -242,17 +221,10 @@ class KLLoss:
     coeff: float = 1.0
     old_logp_key: str = "old_logp_action"
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
         action_mask = batch["action_mask"]
         old_logp = batch[self.old_logp_key]       # [B]
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        logits: Tensor = outputs.logits
 
         logp_new = compute_logp_action(logits, input_ids, action_mask)     # [B]
 
@@ -281,18 +253,9 @@ class EntropyBonus:
     """
 
     coeff: float = 0.01
-    use_action_mask: bool = True
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         action_mask = batch["action_mask"]
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        logits: Tensor = outputs.logits  # [B, T, V]
 
         logprobs = torch.log_softmax(logits, dim=-1)
         probs = torch.exp(logprobs)
@@ -300,10 +263,7 @@ class EntropyBonus:
         # token entropy: [B, T]
         token_entropy = -(probs * logprobs).sum(dim=-1)
 
-        if self.use_action_mask:
-            mask = action_mask.to(token_entropy.dtype)
-        else:
-            mask = attention_mask.to(token_entropy.dtype)
+        mask = action_mask.to(token_entropy.dtype)
 
         masked_entropy = token_entropy * mask   # [B, T]
         # avoid divide-by-zero if mask is all zeros
@@ -353,11 +313,14 @@ class CompositeLoss:
         "{name}/loss", "{name}/<stat_key>", ...
 
     and a top-level "loss" key for the final combined loss.
+    
+    This class expects logits to be passed in, and it passes them
+    down to all child terms.
     """
 
     terms: List[LossTerm]
 
-    def compute(self, model: nn.Module, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
+    def compute(self, logits: Tensor, batch: Batch) -> Tuple[Tensor, Dict[str, Any]]:
         if not self.terms:
             raise ValueError("CompositeLoss.terms must be non-empty")
 
@@ -365,7 +328,8 @@ class CompositeLoss:
         stats: Dict[str, Any] = {}
 
         for term in self.terms:
-            raw_loss, term_stats = term.loss.compute(model, batch)
+            # Pass the pre-computed logits down to the child term
+            raw_loss, term_stats = term.loss.compute(logits, batch)
             scaled_loss = term.weight * raw_loss
 
             if total_loss is None:

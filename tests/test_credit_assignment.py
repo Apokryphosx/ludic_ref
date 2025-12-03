@@ -1,0 +1,175 @@
+import pytest
+import math
+
+from ludic.types import Rollout, Step
+from ludic.training.credit_assignment import (
+    MonteCarloReturn,
+    EpisodicReturn,
+    PerStepReward,
+    GroupNormalizedReturn,
+)
+
+# ---- Helper to build a simple rollout ----
+
+def _make_rollout(
+    id: str,
+    *,
+    prompt: str = "prompt_default",
+    rewards: list[float],
+    request_meta: dict = {},
+) -> Rollout:
+    """
+    Creates a simple rollout with the given params.
+    The rollout's total_reward will be the sum of the rewards list.
+    """
+    rollout = Rollout(id=id, meta={"request_meta": request_meta})
+    obs = prompt  # First prev_obs is the prompt
+
+    if not rewards:
+        return rollout
+
+    for i, reward in enumerate(rewards):
+        next_obs = f"obs_{i+1}" if i < len(rewards) - 1 else None
+        rollout.steps.append(Step(
+            index=i,
+            prev_obs=obs,
+            action=f"action_{i}",
+            next_obs=next_obs,
+            reward=reward,
+            truncated=False,
+            terminated=(i == len(rewards) - 1),
+            info={},
+        ))
+        obs = next_obs or ""
+    return rollout
+
+
+# ---- MonteCarloReturn Tests ----
+
+def test_monte_carlo_return_gamma_1():
+    """Test standard (gamma=1.0) return-to-go."""
+    r1 = _make_rollout("r1", prompt="p1", rewards=[0.0, 0.0, 1.0]) # len 3
+    r2 = _make_rollout("r2", prompt="p2", rewards=[-1.0])          # len 1
+
+    assigner = MonteCarloReturn(gamma=1.0)
+    weights = assigner.compute([r1, r2])
+
+    # G_t = r_t + r_{t+1} + ...
+    # r1: [0.0, 0.0, 1.0]
+    # G:  [1.0, 1.0, 1.0]
+    assert weights[("r1", 0)] == pytest.approx(1.0)
+    assert weights[("r1", 1)] == pytest.approx(1.0)
+    assert weights[("r1", 2)] == pytest.approx(1.0)
+
+    # r2: [-1.0]
+    # G:  [-1.0]
+    assert weights[("r2", 0)] == pytest.approx(-1.0)
+
+    assert len(weights) == 4
+
+
+def test_monte_carlo_return_gamma_0_9():
+    """Test discounted (gamma=0.9) return-to-go."""
+    r1 = _make_rollout("r1", prompt="p1", rewards=[1.0, 2.0, 4.0]) # len 3
+
+    assigner = MonteCarloReturn(gamma=0.9)
+    weights = assigner.compute([r1])
+
+    # r1: [1.0, 2.0, 4.0]
+    # G_2 = 4.0
+    # G_1 = 2.0 + 0.9 * G_2 = 2.0 + 0.9 * 4.0 = 2.0 + 3.6 = 5.6
+    # G_0 = 1.0 + 0.9 * G_1 = 1.0 + 0.9 * 5.6 = 1.0 + 5.04 = 6.04
+    assert weights[("r1", 0)] == pytest.approx(6.04)
+    assert weights[("r1", 1)] == pytest.approx(5.6)
+    assert weights[("r1", 2)] == pytest.approx(4.0)
+    assert len(weights) == 3
+
+# ---- Other Assigner Tests ----
+
+def test_episodic_return():
+    """Test that all steps in a rollout get the total sum."""
+    r1 = _make_rollout("r1", prompt="p1", rewards=[0.0, 0.0, 1.0]) # total = 1.0
+    r2 = _make_rollout("r2", prompt="p2", rewards=[-1.0, -0.5])    # total = -1.5
+
+    assigner = EpisodicReturn()
+    weights = assigner.compute([r1, r2])
+
+    assert weights[("r1", 0)] == pytest.approx(1.0)
+    assert weights[("r1", 1)] == pytest.approx(1.0)
+    assert weights[("r1", 2)] == pytest.approx(1.0)
+
+    assert weights[("r2", 0)] == pytest.approx(-1.5)
+    assert weights[("r2", 1)] == pytest.approx(-1.5)
+    assert len(weights) == 5
+
+
+def test_per_step_reward():
+    """Test that all steps get their own immediate reward."""
+    r1 = _make_rollout("r1", prompt="p1", rewards=[1.0, 2.0, 4.0])
+
+    assigner = PerStepReward()
+    weights = assigner.compute([r1])
+
+    assert weights[("r1", 0)] == pytest.approx(1.0)
+    assert weights[("r1", 1)] == pytest.approx(2.0)
+    assert weights[("r1", 2)] == pytest.approx(4.0)
+    assert len(weights) == 3
+
+
+# ---- GroupNormalizedReturn Tests ----
+
+def test_group_normalized_return_groups_by_prompt_not_meta():
+    """
+    Tests that rollouts are grouped by their first step's 'prev_obs' (the prompt)
+    and NOT by their 'request_meta', which might differ.
+    """
+    # Group A: "prompt_A". Total rewards are 10.0 and 20.0
+    r1 = _make_rollout("r1", prompt="prompt_A", rewards=[10.0], request_meta={"id": 1})
+    r2 = _make_rollout("r2", prompt="prompt_A", rewards=[20.0], request_meta={"id": 2})
+    
+    # Group B: "prompt_B". Total reward is 5.0
+    r3 = _make_rollout("r3", prompt="prompt_B", rewards=[5.0], request_meta={"id": 3})
+
+    assigner = GroupNormalizedReturn(normalize_adv=False)
+    weights = assigner.compute([r1, r2, r3])
+
+    # Group A: rewards=[10, 20], mean=15.0
+    # Adv(r1) = 10.0 - 15.0 = -5.0
+    # Adv(r2) = 20.0 - 15.0 = 5.0
+    assert weights[("r1", 0)] == pytest.approx(-5.0)
+    assert weights[("r2", 0)] == pytest.approx(5.0)
+
+    # Group B: rewards=[5], mean=5.0
+    # Adv(r3) = 5.0 - 5.0 = 0.0
+    assert weights[("r3", 0)] == pytest.approx(0.0)
+    assert len(weights) == 3
+
+
+def test_group_normalized_return_handles_zero_std_dev():
+    """
+    Tests that normalization works correctly when all rewards in a
+    group are identical (std_dev = 0), avoiding division by zero.
+    """
+    # Group A: "prompt_A". All rewards are 10.0
+    r1 = _make_rollout("r1", prompt="prompt_A", rewards=[10.0])
+    r2 = _make_rollout("r2", prompt="prompt_A", rewards=[10.0])
+
+    assigner = GroupNormalizedReturn(normalize_adv=True)
+    weights = assigner.compute([r1, r2])
+
+    # Group A: rewards=[10, 10], mean=10.0
+    # Adv(pre-norm) = [0.0, 0.0]
+    # StdDev = 0.0
+    # Adv(post-norm) = 0.0 / (0.0 + 1e-8) = 0.0
+    
+    adv1 = weights[("r1", 0)]
+    adv2 = weights[("r2", 0)]
+
+    # Check for NaN or Inf
+    assert not math.isnan(adv1) and not math.isinf(adv1)
+    assert not math.isnan(adv2) and not math.isinf(adv2)
+
+    # Check that advantages are 0
+    assert adv1 == pytest.approx(0.0)
+    assert adv2 == pytest.approx(0.0)
+    assert len(weights) == 2
