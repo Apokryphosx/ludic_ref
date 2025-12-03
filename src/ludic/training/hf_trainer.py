@@ -47,7 +47,8 @@ class LudicTrainer(Trainer):
         model, 
         algo: RLAlgorithm, 
         batch_source, 
-        ludic_config: TrainerConfig, 
+        ludic_config: TrainerConfig,
+        client: Optional[ChatClient] = None,
         **kwargs
     ):
         # Ensure we don't accidentally pass a dataset to the super init
@@ -58,7 +59,8 @@ class LudicTrainer(Trainer):
         self.algo = algo
         self.batch_source = batch_source
         self.ludic_config = ludic_config
-
+        self.client = client
+        
         # Safety Check: IterableDatasets require max_steps to be set
         if self.args.max_steps <= 0:
             raise ValueError(
